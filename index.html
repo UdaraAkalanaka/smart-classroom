@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Smart Classroom Energy Saver</title>
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
 :root {
   --bg:#0a0f1e; --bg2:#0f1628; --bg3:#141d35;
@@ -310,16 +311,14 @@ main{max-width:1400px;margin:0 auto;padding:1.5rem 2rem;position:relative;z-inde
     <div class="badge auto" id="ctrl-badge"><div class="dot"></div> Auto</div>
   </div>
 
-  <!-- Auto/Manual Mode -->
+  <!-- Auto Mode -->
   <div class="ctrl-section">
     <div class="ctrl-title">System Mode</div>
     <div class="btn-row">
       <button class="btn auto-btn" id="btn-auto" onclick="sendCmd(0)">⚙️ Enable Auto Mode</button>
-      <button class="btn" id="btn-manual" onclick="enableManual()" style="background:rgba(246,173,85,0.15);border-color:rgba(246,173,85,0.4);color:var(--amber);">🎛️ Enable Manual Mode</button>
     </div>
     <div style="font-size:11px;color:var(--text3);margin-top:10px;">
-      <strong style="color:var(--teal)">Auto:</strong> Sensors control everything automatically. &nbsp;|&nbsp;
-      <strong style="color:var(--amber)">Manual:</strong> You control light &amp; fan directly using the buttons below.
+      Returns full control to sensors. Light and fan will respond to LDR, temperature and student count.
     </div>
   </div>
 
@@ -371,36 +370,16 @@ main{max-width:1400px;margin:0 auto;padding:1.5rem 2rem;position:relative;z-inde
 <section class="section" id="sec-analytics">
   <div class="sh">
     <div><div class="sh-title">Live Analytics</div><div class="sh-sub">Historical data from ThingSpeak — last 60 readings</div></div>
+    <button class="btn" onclick="loadCharts()" style="font-size:11px">🔄 Refresh</button>
   </div>
-  <div class="g2">
-    <div class="chart-card">
-      <div class="chart-title">🌡️ Temperature (°C)</div>
-      <iframe class="chart-frame" src="https://thingspeak.com/channels/3325541/charts/1?bgcolor=%230a0f1e&color=%23f6ad55&dynamic=true&results=60&title=Temperature&type=line&width=auto&height=240"></iframe>
-    </div>
-    <div class="chart-card">
-      <div class="chart-title">💧 Humidity (%)</div>
-      <iframe class="chart-frame" src="https://thingspeak.com/channels/3325541/charts/2?bgcolor=%230a0f1e&color=%2363b3ed&dynamic=true&results=60&title=Humidity&type=line&width=auto&height=240"></iframe>
-    </div>
-  </div>
-  <div class="g2">
-    <div class="chart-card">
-      <div class="chart-title">🏠 Occupancy (0=empty 1=occupied)</div>
-      <iframe class="chart-frame" src="https://thingspeak.com/channels/3325541/charts/3?bgcolor=%230a0f1e&color=%2300d4aa&dynamic=true&results=60&title=Occupancy&type=bar&width=auto&height=240"></iframe>
-    </div>
-    <div class="chart-card">
-      <div class="chart-title">🌬️ Air Quality (MQ135)</div>
-      <iframe class="chart-frame" src="https://thingspeak.com/channels/3325541/charts/4?bgcolor=%230a0f1e&color=%23b794f4&dynamic=true&results=60&title=Air+Quality&type=line&width=auto&height=240"></iframe>
-    </div>
-  </div>
-  <div class="g2">
-    <div class="chart-card">
-      <div class="chart-title">☀️ Light Level (LDR)</div>
-      <iframe class="chart-frame" src="https://thingspeak.com/channels/3325541/charts/5?bgcolor=%230a0f1e&color=%23f6e05e&dynamic=true&results=60&title=Light+Level&type=line&width=auto&height=240"></iframe>
-    </div>
-    <div class="chart-card">
-      <div class="chart-title">⚡ Current (ACS712)</div>
-      <iframe class="chart-frame" src="https://thingspeak.com/channels/3325541/charts/6?bgcolor=%230a0f1e&color=%23fc8181&dynamic=true&results=60&title=Current&type=line&width=auto&height=240"></iframe>
-    </div>
+  <div id="charts-loading" style="text-align:center;padding:40px;color:var(--text3);font-size:13px">Loading charts...</div>
+  <div class="g2" id="charts-grid" style="display:none">
+    <div class="chart-card"><div class="chart-title">🌡️ Temperature (°C)</div><canvas id="ch-temp" height="120"></canvas></div>
+    <div class="chart-card"><div class="chart-title">💧 Humidity (%)</div><canvas id="ch-hum" height="120"></canvas></div>
+    <div class="chart-card"><div class="chart-title">🏠 Occupancy</div><canvas id="ch-occ" height="120"></canvas></div>
+    <div class="chart-card"><div class="chart-title">🌬️ Air Quality (MQ135)</div><canvas id="ch-air" height="120"></canvas></div>
+    <div class="chart-card"><div class="chart-title">☀️ Light Level (LDR)</div><canvas id="ch-ldr" height="120"></canvas></div>
+    <div class="chart-card"><div class="chart-title">⚡ Current (ACS712)</div><canvas id="ch-cur" height="120"></canvas></div>
   </div>
 </section>
 
@@ -488,6 +467,8 @@ let curLightOn  = false;
 let curFanOn    = false;
 let curCount    = 0;
 let sending     = false;
+let lastCmdTime = 0;
+const CMD_COOLDOWN = 16000; // ThingSpeak free tier: 1 write per 15s
 
 // ── TABS ─────────────────────────────────────────────────────
 function showTab(id, el) {
@@ -761,25 +742,52 @@ function updateBadge() {
 
 // ── SEND COMMAND ───────────────────────────────────────────────
 async function sendCmd(val) {
-  if (sending) return;
-  sending = true;
   const labels = ['Auto Mode', 'Light ON', 'Light OFF', 'Fan ON', 'Fan OFF'];
   const icons  = ['⚙️', '💡', '💡', '🌀', '🌀'];
+
+  // ThingSpeak rate limit: 1 write per 15 seconds
+  const now = Date.now();
+  const elapsed = now - lastCmdTime;
+  if (elapsed < CMD_COOLDOWN) {
+    const wait = Math.ceil((CMD_COOLDOWN - elapsed) / 1000);
+    showToast('info', `⏳ Please wait ${wait}s before sending another command`);
+    startCooldownBar(wait);
+    return;
+  }
+
+  if (sending) return;
+  sending = true;
+  lastCmdTime = now;
 
   document.querySelectorAll('.btn').forEach(b => b.disabled = true);
   showToast('info', `⏳ Sending ${labels[val]}...`);
 
-  try {
-    const r = await fetch(`https://api.thingspeak.com/update?api_key=${WKEY}&field7=${val}`);
-    const txt = await r.text();
-    if (parseInt(txt) > 0) {
-      showToast('success', `${icons[val]} ${labels[val]} sent! ESP32 will update in ~10s`);
-      setTimeout(fetchData, 3000);
-    } else {
-      showToast('error', '❌ Failed — check ThingSpeak connection');
+  // Try up to 2 times
+  let success = false;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
+      const r = await fetch(`https://api.thingspeak.com/update?api_key=${WKEY}&field7=${val}`, { signal: controller.signal });
+      clearTimeout(timeout);
+      const txt = await r.text();
+      if (parseInt(txt) > 0) {
+        showToast('success', `${icons[val]} ${labels[val]} sent! ESP32 updates in ~10s`);
+        startCooldownBar(16);
+        setTimeout(fetchData, 4000);
+        success = true;
+        break;
+      } else if (attempt === 1) {
+        await new Promise(res => setTimeout(res, 2000)); // wait 2s before retry
+      }
+    } catch(e) {
+      if (attempt === 1) await new Promise(res => setTimeout(res, 2000));
     }
-  } catch(e) {
-    showToast('error', '❌ Network error — check internet connection');
+  }
+
+  if (!success) {
+    showToast('error', '❌ ThingSpeak busy — wait 15s and try again');
+    lastCmdTime = now - CMD_COOLDOWN + 5000; // allow retry in 5s
   }
 
   setTimeout(() => {
@@ -788,16 +796,28 @@ async function sendCmd(val) {
   }, 3000);
 }
 
-// ── ENABLE MANUAL MODE ─────────────────────────────────────────
-function enableManual() {
-  showToast('info', '🎛️ Manual mode: use Light ON/OFF and Fan ON/OFF buttons below');
-  const bar = document.getElementById('ctrl-mode-bar');
-  bar.className = 'ctrl-mode-bar manual-mode';
-  document.getElementById('ctrl-mode-lbl').className = 'mode-label manual';
-  document.getElementById('ctrl-mode-lbl').textContent = '🎛️ MANUAL MODE — Use buttons below to control devices';
-  document.getElementById('ctrl-mode-desc').textContent = 'Select Light ON/OFF or Fan ON/OFF to send a command to ESP32';
-  document.getElementById('ctrl-badge').className = 'badge manual';
-  document.getElementById('ctrl-badge').innerHTML = '<div class="dot amber"></div> Manual';
+// ── COOLDOWN BAR ───────────────────────────────────────────────
+function startCooldownBar(seconds) {
+  const existing = document.getElementById('cooldown-bar-wrap');
+  if (existing) existing.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'cooldown-bar-wrap';
+  wrap.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--card2);border:1px solid var(--border2);border-radius:10px;padding:8px 16px;font-size:11px;color:var(--text2);z-index:998;display:flex;align-items:center;gap:10px;min-width:220px;';
+  wrap.innerHTML = `<span id="cooldown-txt">Next command in ${seconds}s</span><div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden"><div id="cooldown-fill" style="height:100%;background:var(--teal);width:100%;transition:width 1s linear;border-radius:2px"></div></div>`;
+  document.body.appendChild(wrap);
+  let remaining = seconds;
+  const interval = setInterval(() => {
+    remaining--;
+    const el = document.getElementById('cooldown-txt');
+    const fill = document.getElementById('cooldown-fill');
+    if (el) el.textContent = `Next command in ${remaining}s`;
+    if (fill) fill.style.width = ((remaining / seconds) * 100) + '%';
+    if (remaining <= 0) {
+      clearInterval(interval);
+      const w = document.getElementById('cooldown-bar-wrap');
+      if (w) w.remove();
+    }
+  }, 1000);
 }
 
 // ── ONLINE STATUS ──────────────────────────────────────────────
@@ -818,6 +838,93 @@ function showToast(type, msg) {
   el.textContent = msg;
   document.getElementById('toast').appendChild(el);
   setTimeout(() => el.remove(), 5000);
+}
+
+// ── ANALYTICS CHARTS ──────────────────────────────────────────
+let chartsLoaded = false;
+const chartInstances = {};
+
+const chartCfg = [
+  { id:'ch-temp', field:'field1', label:'Temperature (°C)', color:'#f6ad55' },
+  { id:'ch-hum',  field:'field2', label:'Humidity (%)',      color:'#63b3ed' },
+  { id:'ch-occ',  field:'field3', label:'Occupancy',         color:'#00d4aa', type:'bar' },
+  { id:'ch-air',  field:'field4', label:'Air Quality',       color:'#b794f4' },
+  { id:'ch-ldr',  field:'field5', label:'Light Level',       color:'#f6e05e' },
+  { id:'ch-cur',  field:'field6', label:'Current (raw)',     color:'#fc8181' },
+];
+
+async function loadCharts() {
+  document.getElementById('charts-loading').style.display = 'block';
+  document.getElementById('charts-grid').style.display = 'none';
+  try {
+    const r = await fetch(`https://api.thingspeak.com/channels/${CH}/feeds.json?api_key=${RKEY}&results=60`);
+    const data = await r.json();
+    const feeds = data.feeds;
+    const labels = feeds.map(f => {
+      const d = new Date(f.created_at);
+      return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+    });
+    document.getElementById('charts-loading').style.display = 'none';
+    document.getElementById('charts-grid').style.display = 'grid';
+
+    chartCfg.forEach(cfg => {
+      const values = feeds.map(f => parseFloat(f[cfg.field]) || 0);
+      const canvas = document.getElementById(cfg.id);
+      if (chartInstances[cfg.id]) chartInstances[cfg.id].destroy();
+      chartInstances[cfg.id] = new Chart(canvas, {
+        type: cfg.type || 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: cfg.label,
+            data: values,
+            borderColor: cfg.color,
+            backgroundColor: cfg.type === 'bar' ? cfg.color + '55' : cfg.color + '22',
+            borderWidth: 2,
+            pointRadius: 0,
+            tension: 0.3,
+            fill: true,
+          }]
+        },
+        options: {
+          responsive: true,
+          animation: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: {
+              backgroundColor: '#1a2540',
+              titleColor: '#94a3b8',
+              bodyColor: '#e2e8f0',
+              borderColor: 'rgba(99,179,237,0.2)',
+              borderWidth: 1,
+            }
+          },
+          scales: {
+            x: {
+              ticks: { color:'#64748b', maxTicksLimit: 8, font:{ size:9 } },
+              grid:  { color:'rgba(99,179,237,0.05)' }
+            },
+            y: {
+              ticks: { color:'#64748b', font:{ size:9 } },
+              grid:  { color:'rgba(99,179,237,0.05)' }
+            }
+          }
+        }
+      });
+    });
+  } catch(e) {
+    document.getElementById('charts-loading').textContent = '❌ Failed to load charts — check internet connection';
+  }
+}
+
+// Auto-load charts when Analytics tab is clicked
+const origShowTab = showTab;
+function showTab(id, el) {
+  origShowTab(id, el);
+  if (id === 'analytics' && !chartsLoaded) {
+    chartsLoaded = true;
+    loadCharts();
+  }
 }
 
 // ── INIT ────────────────────────────────────────────────────────
