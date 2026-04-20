@@ -370,7 +370,7 @@ main{max-width:1400px;margin:0 auto;padding:1.5rem 2rem;position:relative;z-inde
 <section class="section" id="sec-analytics">
   <div class="sh">
     <div><div class="sh-title">Live Analytics</div><div class="sh-sub">Historical data from ThingSpeak — last 60 readings</div></div>
-    <button class="btn" onclick="loadCharts()" style="font-size:11px">🔄 Refresh</button>
+    <button class="btn" onclick="chartsLoaded=false;loadCharts(true)" style="font-size:11px">🔄 Refresh</button>
   </div>
   <div id="charts-loading" style="text-align:center;padding:40px;color:var(--text3);font-size:13px">Loading charts...</div>
   <div class="g2" id="charts-grid" style="display:none">
@@ -476,6 +476,10 @@ function showTab(id, el) {
   document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
   document.getElementById('sec-' + id).classList.add('active');
   el.classList.add('active');
+  if (id === 'analytics' && !chartsLoaded) {
+    chartsLoaded = true;
+    loadCharts();
+  }
 }
 
 // ── FETCH ─────────────────────────────────────────────────────
@@ -631,7 +635,7 @@ function updateControlsSection(ovrd, lightOn, fanOn, occ, temp, ldr) {
   const ctrlBadge = document.getElementById('ctrl-badge');
   const btnAuto   = document.getElementById('btn-auto');
 
-  if (ovrd === 0) {
+  if (ovrd === 0 && !localManualMode) {
     modeBar.className  = 'ctrl-mode-bar auto-mode';
     modeLbl.className  = 'mode-label auto';
     modeLbl.textContent = '⚙️ AUTO MODE ACTIVE';
@@ -641,7 +645,8 @@ function updateControlsSection(ovrd, lightOn, fanOn, occ, temp, ldr) {
     ctrlBadge.className = 'badge auto';
     ctrlBadge.innerHTML = '<div class="dot"></div> Auto';
     btnAuto.classList.remove('active-btn');
-  } else {
+  } else if (ovrd !== 0) {
+    localManualMode = true; // sync flag with ThingSpeak state
     modeBar.className  = 'ctrl-mode-bar manual-mode';
     modeLbl.className  = 'mode-label manual';
     modeLbl.textContent = '⚠️ MANUAL OVERRIDE ACTIVE';
@@ -742,6 +747,7 @@ function updateBadge() {
 
 // ── SEND COMMAND ───────────────────────────────────────────────
 async function sendCmd(val) {
+  if (val === 0) localManualMode = false; // reset manual flag when going back to auto
   const labels = ['Auto Mode', 'Light ON', 'Light OFF', 'Fan ON', 'Fan OFF'];
   const icons  = ['⚙️', '💡', '💡', '🌀', '🌀'];
 
@@ -794,6 +800,27 @@ async function sendCmd(val) {
     document.querySelectorAll('.btn').forEach(b => b.disabled = false);
     sending = false;
   }, 3000);
+}
+
+// ── ENABLE MANUAL MODE ─────────────────────────────────────────
+// Manual mode = just highlight the UI and guide user to pick Light/Fan buttons
+// The actual override happens when they click Light ON/OFF or Fan ON/OFF
+let localManualMode = false;
+
+function enableManual() {
+  localManualMode = true;
+  // Update controls mode bar immediately without waiting for ThingSpeak
+  const modeBar  = document.getElementById('ctrl-mode-bar');
+  const modeLbl  = document.getElementById('ctrl-mode-lbl');
+  const modeDesc = document.getElementById('ctrl-mode-desc');
+  const ctrlBadge = document.getElementById('ctrl-badge');
+  modeBar.className   = 'ctrl-mode-bar manual-mode';
+  modeLbl.className   = 'mode-label manual';
+  modeLbl.textContent = '🎛️ MANUAL MODE — Choose a command below';
+  modeDesc.textContent = 'Click Light ON / Light OFF / Fan ON / Fan OFF to send a command to ESP32';
+  ctrlBadge.className = 'badge manual';
+  ctrlBadge.innerHTML = '<div class="dot amber"></div> Manual';
+  showToast('info', '🎛️ Manual mode ready — now click Light ON/OFF or Fan ON/OFF');
 }
 
 // ── COOLDOWN BAR ───────────────────────────────────────────────
@@ -853,7 +880,8 @@ const chartCfg = [
   { id:'ch-cur',  field:'field6', label:'Current (raw)',     color:'#fc8181' },
 ];
 
-async function loadCharts() {
+async function loadCharts(force) {
+  if (force) chartsLoaded = true;
   document.getElementById('charts-loading').style.display = 'block';
   document.getElementById('charts-grid').style.display = 'none';
   try {
@@ -917,15 +945,7 @@ async function loadCharts() {
   }
 }
 
-// Auto-load charts when Analytics tab is clicked
-const origShowTab = showTab;
-function showTab(id, el) {
-  origShowTab(id, el);
-  if (id === 'analytics' && !chartsLoaded) {
-    chartsLoaded = true;
-    loadCharts();
-  }
-}
+// charts tab trigger is handled inside showTab below — see navTab onclick
 
 // ── INIT ────────────────────────────────────────────────────────
 document.getElementById('start-time').textContent = new Date().toLocaleTimeString();
