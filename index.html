@@ -316,10 +316,9 @@ main{max-width:1400px;margin:0 auto;padding:1.5rem 2rem;position:relative;z-inde
     <div class="ctrl-title">System Mode</div>
     <div class="btn-row">
       <button class="btn auto-btn" id="btn-auto" onclick="sendCmd(0)">⚙️ Enable Auto Mode</button>
-      <button class="btn" id="btn-manual" onclick="enableManual()" style="background:rgba(246,173,85,0.15);border-color:rgba(246,173,85,0.4);color:var(--amber);">🎛️ Enable Manual Mode</button>
     </div>
     <div style="font-size:11px;color:var(--text3);margin-top:10px;">
-      <strong style="color:var(--teal)">Auto:</strong> Sensors control everything automatically. &nbsp;|&nbsp; <strong style="color:var(--amber)">Manual:</strong> You pick which device to control using buttons below.
+      Returns full control to sensors. Light and fan will respond to LDR, temperature and student count.
     </div>
   </div>
 
@@ -371,16 +370,16 @@ main{max-width:1400px;margin:0 auto;padding:1.5rem 2rem;position:relative;z-inde
 <section class="section" id="sec-analytics">
   <div class="sh">
     <div><div class="sh-title">Live Analytics</div><div class="sh-sub">Historical data from ThingSpeak — last 60 readings</div></div>
-    <button class="btn" onclick="loadCharts()" style="font-size:11px">🔄 Refresh Charts</button>
+    <button class="btn" onclick="reloadCharts()" style="font-size:11px">🔄 Refresh</button>
   </div>
-  <div id="charts-loading" style="text-align:center;padding:60px;color:var(--text3);font-size:13px;">⏳ Loading charts from ThingSpeak...</div>
+  <div id="charts-loading" style="text-align:center;padding:60px;color:var(--text3);font-size:13px;">⏳ Click Analytics tab to load charts</div>
   <div class="g2" id="charts-grid" style="display:none;">
-    <div class="chart-card"><div class="chart-title">🌡️ Temperature (°C)</div><canvas id="ch-temp" height="120"></canvas></div>
-    <div class="chart-card"><div class="chart-title">💧 Humidity (%)</div><canvas id="ch-hum" height="120"></canvas></div>
-    <div class="chart-card"><div class="chart-title">🏠 Occupancy (0=empty / 1=occupied)</div><canvas id="ch-occ" height="120"></canvas></div>
-    <div class="chart-card"><div class="chart-title">🌬️ Air Quality (MQ135)</div><canvas id="ch-air" height="120"></canvas></div>
-    <div class="chart-card"><div class="chart-title">☀️ Light Level (LDR)</div><canvas id="ch-ldr" height="120"></canvas></div>
-    <div class="chart-card"><div class="chart-title">⚡ Current (ACS712)</div><canvas id="ch-cur" height="120"></canvas></div>
+    <div class="chart-card"><div class="chart-title">🌡️ Temperature (°C)</div><canvas id="ch-temp"></canvas></div>
+    <div class="chart-card"><div class="chart-title">💧 Humidity (%)</div><canvas id="ch-hum"></canvas></div>
+    <div class="chart-card"><div class="chart-title">🏠 Student Count (0–15)</div><canvas id="ch-occ"></canvas></div>
+    <div class="chart-card"><div class="chart-title">🌬️ Air Quality (MQ135)</div><canvas id="ch-air"></canvas></div>
+    <div class="chart-card"><div class="chart-title">☀️ Light Level (LDR)</div><canvas id="ch-ldr"></canvas></div>
+    <div class="chart-card"><div class="chart-title">⚡ Current (ACS712)</div><canvas id="ch-cur"></canvas></div>
   </div>
 </section>
 
@@ -452,26 +451,25 @@ main{max-width:1400px;margin:0 auto;padding:1.5rem 2rem;position:relative;z-inde
 
 <script>
 // ── CONFIG ──────────────────────────────────────────────────
-const CH      = '3325541';
-const RKEY    = '7SN5ZNO833BHI2ZF';
-const WKEY    = 'L1NC9B87V5R12OY1';
+const CH   = '3325541';
+const RKEY = '7SN5ZNO833BHI2ZF';
+const WKEY = 'L1NC9B87V5R12OY1';
 const REFRESH = 20000;
+
+// Thresholds match firmware exactly
 const T_TEMP  = 27.0;
 const T_LDR   = 2000;
 const T_AIR   = 1500;
 
-// ── STATE (all declared upfront — no temporal dead zone issues) ──
-let alerts         = [];
-let curOverride    = 0;
-let curLightOn     = false;
-let curFanOn       = false;
-let curCount       = 0;
-let sending        = false;
-let lastCmdTime    = 0;
-let localManual    = false;  // true when user clicked Manual Mode button
-let chartsLoaded   = false;
-let chartInstances = {};
-const CMD_COOLDOWN = 16000;  // ThingSpeak free tier: 1 write per 15s
+let alerts = [];
+let curOverride = 0;
+let curLightOn  = false;
+let curFanOn    = false;
+let curCount    = 0;
+let sending     = false;
+let lastCmdTime = 0;          // tracks last ThingSpeak write time
+let chartsLoaded = false;     // tracks if analytics charts loaded
+const chartInst  = {};        // Chart.js instances
 
 // ── TABS ─────────────────────────────────────────────────────
 function showTab(id, el) {
@@ -511,21 +509,19 @@ function updateAll(d) {
   curOverride = ovrd;
   curCount    = occ;
 
-  // Sync localManual flag with ThingSpeak
-  if (ovrd !== 0) localManual = true;
-  if (ovrd === 0 && !localManual) localManual = false;
-
+  // Time
   const now = new Date();
   document.getElementById('last-update').textContent = now.toLocaleTimeString();
   document.getElementById('start-time').textContent  = now.toLocaleTimeString();
 
-  // ── Occupancy ring ──
+  // ── Occupancy ring — field3 now = actual student count (0-15) ──
+  const maxS = 15;
   const circ = 2 * Math.PI * 38;
-  const pct  = Math.min(occ / 30, 1);
+  const pct  = Math.min(occ / maxS, 1);
   document.getElementById('occ-ring-circle').style.strokeDashoffset = circ * (1 - pct);
   document.getElementById('occ-num').textContent = occ;
 
-  const occCard  = document.getElementById('occ-card');
+  const occCard = document.getElementById('occ-card');
   const occBadge = document.getElementById('occ-badge');
   if (occ > 0) {
     document.getElementById('occ-title').textContent = `${occ} Student${occ > 1 ? 's' : ''} Present`;
@@ -541,9 +537,9 @@ function updateAll(d) {
     occBadge.innerHTML = '<div class="dot red"></div> Empty';
   }
 
-  // Mode badge (overview)
+  // Mode badge
   const modeBadge = document.getElementById('mode-badge');
-  if (ovrd === 0 && !localManual) {
+  if (ovrd === 0) {
     modeBadge.className = 'badge auto';
     modeBadge.innerHTML = '<div class="dot"></div> Auto Mode';
   } else {
@@ -552,59 +548,82 @@ function updateAll(d) {
   }
 
   // ── Sensor cards ──
-  document.getElementById('v-temp').innerHTML    = `${temp.toFixed(1)}<span class="cu">°C</span>`;
-  document.getElementById('s-temp').textContent  = temp > T_TEMP ? '⚠️ Above 27°C threshold' : '✅ Normal range';
-  document.getElementById('v-hum').innerHTML     = `${hum.toFixed(0)}<span class="cu">%</span>`;
-  document.getElementById('s-hum').textContent   = hum > 70 ? '⚠️ High humidity' : hum < 30 ? '⚠️ Low humidity' : '✅ Comfortable';
-  document.getElementById('v-ldr').textContent   = ldr.toFixed(0);
-  document.getElementById('s-ldr').textContent   = ldr > T_LDR ? '🌑 Dark — light needed' : '☀️ Bright — natural light OK';
-  document.getElementById('v-air').textContent   = air.toFixed(0);
-  document.getElementById('s-air').textContent   = air > T_AIR ? '⚠️ Poor air quality!' : '✅ Air quality good';
-  document.getElementById('p-cur').textContent   = cur.toFixed(0) + ' raw';
-  document.getElementById('p-mode').textContent  = (ovrd === 0 && !localManual) ? 'AUTO' : 'MANUAL';
-  document.getElementById('p-ovrd').textContent  = ovrd === 0 ? 'None' : `Field7=${ovrd}`;
+  document.getElementById('v-temp').innerHTML = `${temp.toFixed(1)}<span class="cu">°C</span>`;
+  document.getElementById('s-temp').textContent = temp > T_TEMP ? '⚠️ Above 27°C threshold' : '✅ Normal range';
 
-  // ── Device states (mirrors firmware logic exactly) ──
+  document.getElementById('v-hum').innerHTML = `${hum.toFixed(0)}<span class="cu">%</span>`;
+  document.getElementById('s-hum').textContent = hum > 70 ? '⚠️ High humidity' : hum < 30 ? '⚠️ Low humidity' : '✅ Comfortable';
+
+  document.getElementById('v-ldr').textContent = ldr.toFixed(0);
+  document.getElementById('s-ldr').textContent = ldr > T_LDR ? '🌑 Dark — light needed' : '☀️ Bright — natural light OK';
+
+  document.getElementById('v-air').textContent = air.toFixed(0);
+  document.getElementById('s-air').textContent = air > T_AIR ? '⚠️ Poor air quality!' : '✅ Air quality good';
+
+  document.getElementById('p-cur').textContent  = cur.toFixed(0) + ' raw';
+  document.getElementById('p-mode').textContent = ovrd === 0 ? 'AUTO' : 'MANUAL';
+  document.getElementById('p-ovrd').textContent = ovrd === 0 ? 'None' : `Field7=${ovrd}`;
+
+  // ── Determine actual device states ──
+  // Auto logic mirrors firmware exactly
   let lightOn = false;
   let fanOn   = false;
-  if      (ovrd === 1) { lightOn = true;       fanOn = curFanOn;   }
-  else if (ovrd === 2) { lightOn = false;      fanOn = curFanOn;   }
-  else if (ovrd === 3) { lightOn = curLightOn; fanOn = true;       }
-  else if (ovrd === 4) { lightOn = curLightOn; fanOn = false;      }
-  else if (occ > 0)   { lightOn = ldr > T_LDR; fanOn = temp > T_TEMP; }
+
+  if (ovrd === 1) { lightOn = true;  fanOn = curFanOn; }
+  else if (ovrd === 2) { lightOn = false; fanOn = curFanOn; }
+  else if (ovrd === 3) { lightOn = curLightOn; fanOn = true; }
+  else if (ovrd === 4) { lightOn = curLightOn; fanOn = false; }
+  else {
+    // Auto mode
+    if (occ > 0) {
+      lightOn = ldr > T_LDR;
+      fanOn   = temp > T_TEMP;
+    } else {
+      lightOn = false;
+      fanOn   = false;
+    }
+  }
+
   curLightOn = lightOn;
   curFanOn   = fanOn;
 
   // ── Device reason text ──
-  let lightReason = ovrd===1 ? 'Manual override — forced ON'
-    : ovrd===2 ? 'Manual override — forced OFF'
-    : occ===0 ? 'Room empty — saving energy'
-    : lightOn ? `Dark (LDR ${ldr.toFixed(0)} > ${T_LDR})`
-    : `Bright enough (LDR ${ldr.toFixed(0)} < ${T_LDR})`;
+  let lightReason = '';
+  let fanReason   = '';
 
-  let fanReason = ovrd===3 ? 'Manual override — forced ON'
-    : ovrd===4 ? 'Manual override — forced OFF'
-    : occ===0 ? 'Room empty — saving energy'
-    : fanOn ? `Hot (${temp.toFixed(1)}°C > ${T_TEMP}°C)`
-    : `Cool enough (${temp.toFixed(1)}°C < ${T_TEMP}°C)`;
+  if (ovrd === 1) lightReason = 'Manual override — forced ON';
+  else if (ovrd === 2) lightReason = 'Manual override — forced OFF';
+  else if (occ === 0) lightReason = 'Room empty — saving energy';
+  else if (lightOn) lightReason = `Dark (LDR ${ldr.toFixed(0)} > ${T_LDR})`;
+  else lightReason = `Bright enough (LDR ${ldr.toFixed(0)} < ${T_LDR})`;
 
+  if (ovrd === 3) fanReason = 'Manual override — forced ON';
+  else if (ovrd === 4) fanReason = 'Manual override — forced OFF';
+  else if (occ === 0) fanReason = 'Room empty — saving energy';
+  else if (fanOn) fanReason = `Hot (${temp.toFixed(1)}°C > ${T_TEMP}°C)`;
+  else fanReason = `Cool enough (${temp.toFixed(1)}°C < ${T_TEMP}°C)`;
+
+  // ── Update device cards ──
   setDevice('light', lightOn, lightReason);
-  setDevice('fan',   fanOn,   fanReason);
+  setDevice('fan', fanOn, fanReason);
 
   const airBad = air > T_AIR;
-  document.getElementById('dc-air').className  = 'dev-card' + (airBad ? ' warn' : '');
-  document.getElementById('di-air').className  = 'dev-ico'  + (airBad ? ' warn' : ' off');
+  document.getElementById('dc-air').className = 'dev-card' + (airBad ? ' warn' : '');
+  document.getElementById('di-air').className = 'dev-ico' + (airBad ? ' warn' : ' off');
   document.getElementById('di-air').textContent = airBad ? '⚠️' : '✅';
-  document.getElementById('ds-air').textContent = airBad ? 'POOR' : 'GOOD';
-  document.getElementById('ds-air').className  = 'dev-st'  + (airBad ? ' warn' : ' off');
+  document.getElementById('ds-air').textContent  = airBad ? 'POOR' : 'GOOD';
+  document.getElementById('ds-air').className   = 'dev-st' + (airBad ? ' warn' : ' off');
 
+  // ── Controls section update ──
   updateControlsSection(ovrd, lightOn, fanOn, occ, temp, ldr);
+
+  // ── Alerts ──
   checkAlerts(temp, hum, air, occ, ovrd, ldr);
 }
 
 function setDevice(name, on, reason) {
   document.getElementById('dc-' + name).className = 'dev-card' + (on ? ' on' : '');
-  document.getElementById('di-' + name).className = 'dev-ico'  + (on ? ' on' : ' off');
+  document.getElementById('di-' + name).className = 'dev-ico' + (on ? ' on' : ' off');
   document.getElementById('ds-' + name).textContent = on ? 'ON' : 'OFF';
   document.getElementById('ds-' + name).className   = 'dev-st' + (on ? ' on' : ' off');
   document.getElementById('dr-' + name).textContent = reason;
@@ -617,33 +636,22 @@ function updateControlsSection(ovrd, lightOn, fanOn, occ, temp, ldr) {
   const ctrlBadge = document.getElementById('ctrl-badge');
   const btnAuto   = document.getElementById('btn-auto');
 
-  if (ovrd === 0 && !localManual) {
-    // Full auto
-    modeBar.className   = 'ctrl-mode-bar auto-mode';
-    modeLbl.className   = 'mode-label auto';
+  if (ovrd === 0) {
+    modeBar.className  = 'ctrl-mode-bar auto-mode';
+    modeLbl.className  = 'mode-label auto';
     modeLbl.textContent = '⚙️ AUTO MODE ACTIVE';
     modeDesc.textContent = occ > 0
-      ? `Room occupied — light ${lightOn?'ON (dark)':'OFF (bright)'}, fan ${fanOn?'ON (hot)':'OFF (cool)'}`
+      ? `Room occupied — light ${lightOn ? 'ON (dark)' : 'OFF (bright)'}, fan ${fanOn ? 'ON (hot)' : 'OFF (cool)'}`
       : 'Room empty — all devices OFF, saving energy';
     ctrlBadge.className = 'badge auto';
     ctrlBadge.innerHTML = '<div class="dot"></div> Auto';
     btnAuto.classList.remove('active-btn');
-  } else if (localManual && ovrd === 0) {
-    // User clicked Manual Mode but hasn't sent a command yet
-    modeBar.className   = 'ctrl-mode-bar manual-mode';
-    modeLbl.className   = 'mode-label manual';
-    modeLbl.textContent = '🎛️ MANUAL MODE — Choose a command below';
-    modeDesc.textContent = 'Click Light ON / Light OFF / Fan ON / Fan OFF to send command to ESP32';
-    ctrlBadge.className = 'badge manual';
-    ctrlBadge.innerHTML = '<div class="dot amber"></div> Manual';
-    btnAuto.classList.remove('active-btn');
   } else {
-    // Active override from ThingSpeak
-    modeBar.className   = 'ctrl-mode-bar manual-mode';
-    modeLbl.className   = 'mode-label manual';
+    modeBar.className  = 'ctrl-mode-bar manual-mode';
+    modeLbl.className  = 'mode-label manual';
     modeLbl.textContent = '⚠️ MANUAL OVERRIDE ACTIVE';
-    const cmdLabels = ['','Light forced ON','Light forced OFF','Fan forced ON','Fan forced OFF'];
-    modeDesc.textContent = `Command ${ovrd}: ${cmdLabels[ovrd]} — click Auto Mode to restore sensors`;
+    const labels = ['', 'Light forced ON', 'Light forced OFF', 'Fan forced ON', 'Fan forced OFF'];
+    modeDesc.textContent = `Command ${ovrd}: ${labels[ovrd]} — click Auto Mode to restore sensors`;
     ctrlBadge.className = 'badge manual';
     ctrlBadge.innerHTML = '<div class="dot amber"></div> Manual';
     btnAuto.classList.add('active-btn');
@@ -652,100 +660,51 @@ function updateControlsSection(ovrd, lightOn, fanOn, occ, temp, ldr) {
   // Light banner
   const lBanner = document.getElementById('light-status-banner');
   const lTxt    = document.getElementById('light-banner-txt');
-  lBanner.className = lightOn ? 'warn-banner success' : 'warn-banner info';
-  lTxt.textContent  = lightOn ? 'ON ✅' : 'OFF';
+  if (lightOn) {
+    lBanner.className = 'warn-banner success';
+    lTxt.textContent  = 'ON ✅';
+  } else {
+    lBanner.className = 'warn-banner info';
+    lTxt.textContent  = 'OFF';
+  }
 
   // Fan banner
   const fBanner = document.getElementById('fan-status-banner');
   const fTxt    = document.getElementById('fan-banner-txt');
-  fBanner.className = fanOn ? 'warn-banner success' : 'warn-banner info';
-  fTxt.textContent  = fanOn ? 'ON ✅' : 'OFF';
+  if (fanOn) {
+    fBanner.className = 'warn-banner success';
+    fTxt.textContent  = 'ON ✅';
+  } else {
+    fBanner.className = 'warn-banner info';
+    fTxt.textContent  = 'OFF';
+  }
 
-  // Highlight active button
+  // Highlight active command button
   ['btn-auto','btn-light-on','btn-light-off','btn-fan-on','btn-fan-off'].forEach(id => {
     document.getElementById(id).classList.remove('active-btn');
   });
+  const activeIds = ['btn-auto','btn-light-on','btn-light-off','btn-fan-on','btn-fan-off'];
   if (ovrd >= 0 && ovrd <= 4) {
-    document.getElementById(['btn-auto','btn-light-on','btn-light-off','btn-fan-on','btn-fan-off'][ovrd]).classList.add('active-btn');
+    document.getElementById(activeIds[ovrd]).classList.add('active-btn');
   }
 }
 
-// ── MANUAL MODE BUTTON ────────────────────────────────────────
-function enableManual() {
-  localManual = true;
-  // Update mode bar immediately — will stay until Auto is clicked or next fetchData
-  const modeBar = document.getElementById('ctrl-mode-bar');
-  modeBar.className = 'ctrl-mode-bar manual-mode';
-  document.getElementById('ctrl-mode-lbl').className   = 'mode-label manual';
-  document.getElementById('ctrl-mode-lbl').textContent = '🎛️ MANUAL MODE — Choose a command below';
-  document.getElementById('ctrl-mode-desc').textContent = 'Click Light ON / Light OFF / Fan ON / Fan OFF to send command to ESP32';
-  document.getElementById('ctrl-badge').className = 'badge manual';
-  document.getElementById('ctrl-badge').innerHTML = '<div class="dot amber"></div> Manual';
-  showToast('info', '🎛️ Manual mode ready — now click Light ON/OFF or Fan ON/OFF');
-}
-
-// ── SEND COMMAND ───────────────────────────────────────────────
-async function sendCmd(val) {
-  const labels = ['Auto Mode', 'Light ON', 'Light OFF', 'Fan ON', 'Fan OFF'];
-  const icons  = ['⚙️', '💡', '💡', '🌀', '🌀'];
-
-  // Rate limit check
-  const now     = Date.now();
-  const elapsed = now - lastCmdTime;
-  if (elapsed < CMD_COOLDOWN) {
-    const wait = Math.ceil((CMD_COOLDOWN - elapsed) / 1000);
-    showToast('info', `⏳ Wait ${wait}s before next command (ThingSpeak limit)`);
-    return;
-  }
-  if (sending) return;
-
-  // Reset manual flag if going back to auto
-  if (val === 0) localManual = false;
-
-  sending     = true;
-  lastCmdTime = now;
-  document.querySelectorAll('.btn').forEach(b => b.disabled = true);
-  showToast('info', `⏳ Sending ${labels[val]}...`);
-
-  let success = false;
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    try {
-      const ctrl    = new AbortController();
-      const timer   = setTimeout(() => ctrl.abort(), 8000);
-      const r       = await fetch(`https://api.thingspeak.com/update?api_key=${WKEY}&field7=${val}`, { signal: ctrl.signal });
-      clearTimeout(timer);
-      const txt = await r.text();
-      if (parseInt(txt) > 0) {
-        showToast('success', `${icons[val]} ${labels[val]} sent! ESP32 updates in ~10s`);
-        setTimeout(fetchData, 4000);
-        success = true;
-        break;
-      }
-    } catch(e) { /* retry */ }
-    if (attempt === 1) await new Promise(res => setTimeout(res, 2000));
-  }
-  if (!success) {
-    showToast('error', '❌ ThingSpeak error — try again in 15s');
-    lastCmdTime = now - CMD_COOLDOWN + 5000;
-  }
-
-  setTimeout(() => {
-    document.querySelectorAll('.btn').forEach(b => b.disabled = false);
-    sending = false;
-  }, 3000);
-}
-
-// ── ALERTS ────────────────────────────────────────────────────
+// ── ALERTS ─────────────────────────────────────────────────────
 function checkAlerts(temp, hum, air, occ, ovrd, ldr) {
   const t = new Date().toLocaleTimeString();
-  if (temp > 35)                           pushAlert('danger',  '🌡️', 'Critical Temperature', `${temp.toFixed(1)}°C — very high, check ventilation`, t);
-  else if (temp > T_TEMP && occ > 0)       pushAlert('warning', '🌡️', 'High Temperature',     `${temp.toFixed(1)}°C above 27°C threshold`, t);
-  if (air > T_AIR)                         pushAlert('danger',  '⚠️', 'Poor Air Quality',     `MQ135: ${air.toFixed(0)} exceeds ${T_AIR} — open windows!`, t);
-  if (hum > 80)                            pushAlert('warning', '💧', 'High Humidity',         `${hum.toFixed(0)}% above comfortable range`, t);
-  if (ovrd !== 0)                          pushAlert('warning', '🎛️', 'Manual Override Active',`System in manual mode (Field 7 = ${ovrd})`, t);
-  if (occ === 0 && (curLightOn||curFanOn)) pushAlert('info',    '💡', 'Device On — Room Empty','Manual override keeping device on in empty room', t);
-  if (occ > 0 && ldr < T_LDR && !curLightOn && ovrd === 0)
-                                           pushAlert('info',    '☀️', 'Natural Light Saving',  `LDR ${ldr.toFixed(0)} — natural light sufficient`, t);
+
+  if (temp > 35) pushAlert('danger', '🌡️', 'Critical Temperature', `${temp.toFixed(1)}°C — very high, check ventilation`, t);
+  else if (temp > T_TEMP && occ > 0 && !curFanOn) pushAlert('warning', '🌡️', 'High Temperature', `${temp.toFixed(1)}°C above 27°C threshold — fan should activate`, t);
+
+  if (air > T_AIR) pushAlert('danger', '⚠️', 'Poor Air Quality', `MQ135 reading ${air.toFixed(0)} exceeds threshold (${T_AIR}) — open windows!`, t);
+
+  if (hum > 80) pushAlert('warning', '💧', 'High Humidity', `Humidity ${hum.toFixed(0)}% is above comfortable range`, t);
+
+  if (ovrd !== 0) pushAlert('warning', '🎛️', 'Manual Override Active', `System in manual mode (Field 7 = ${ovrd}). Auto sensors disabled.`, t);
+
+  if (occ === 0 && (curLightOn || curFanOn)) pushAlert('info', '💡', 'Device On — Room Empty', 'Manual override keeping device on in empty room', t);
+
+  if (occ > 0 && ldr < T_LDR && !curLightOn && ovrd === 0) pushAlert('info', '☀️', 'Natural Light Saving', `LDR ${ldr.toFixed(0)} — natural light sufficient, artificial light off`, t);
 }
 
 function pushAlert(type, icon, title, msg, time) {
@@ -765,102 +724,167 @@ function renderAlerts() {
   list.innerHTML = alerts.map(a => `
     <div class="alert-item ${a.type}">
       <div class="alert-icon">${a.icon}</div>
-      <div style="flex:1"><div class="alert-title">${a.title}</div><div class="alert-msg">${a.msg}</div></div>
+      <div style="flex:1">
+        <div class="alert-title">${a.title}</div>
+        <div class="alert-msg">${a.msg}</div>
+      </div>
       <div class="alert-time">${a.time}</div>
-    </div>`).join('');
+    </div>
+  `).join('');
 }
 
-function clearAlerts() { alerts = []; renderAlerts(); updateBadge(); }
+function clearAlerts() {
+  alerts = [];
+  renderAlerts();
+  updateBadge();
+}
 
 function updateBadge() {
   const b = document.getElementById('alert-cnt');
-  b.style.display = alerts.length > 0 ? 'inline' : 'none';
-  b.textContent   = alerts.length;
+  if (alerts.length > 0) { b.style.display = 'inline'; b.textContent = alerts.length; }
+  else { b.style.display = 'none'; }
 }
 
-// ── ANALYTICS CHARTS ─────────────────────────────────────────
+// ── SEND COMMAND (15s cooldown — ThingSpeak rate limit) ────────
+async function sendCmd(val) {
+  const labels = ['Auto Mode', 'Light ON', 'Light OFF', 'Fan ON', 'Fan OFF'];
+  const icons  = ['⚙️', '💡', '💡', '🌀', '🌀'];
+
+  // Enforce 15s minimum between writes
+  const now     = Date.now();
+  const elapsed = now - lastCmdTime;
+  const COOLDOWN = 16000;
+  if (elapsed < COOLDOWN) {
+    const wait = Math.ceil((COOLDOWN - elapsed) / 1000);
+    showToast('info', `⏳ Wait ${wait}s — ThingSpeak allows 1 command per 15s`);
+    showCooldownBar(wait, COOLDOWN / 1000);
+    return;
+  }
+
+  if (sending) return;
+  sending = true;
+  lastCmdTime = now;
+
+  document.querySelectorAll('.btn').forEach(b => b.disabled = true);
+  showToast('info', `⏳ Sending ${labels[val]}...`);
+
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+    const r = await fetch(`https://api.thingspeak.com/update?api_key=${WKEY}&field7=${val}`, { signal: controller.signal });
+    clearTimeout(timeout);
+    const txt = await r.text();
+    if (parseInt(txt) > 0) {
+      showToast('success', `${icons[val]} ${labels[val]} sent! ESP32 updates in ~10s`);
+      showCooldownBar(16, 16);
+      setTimeout(fetchData, 4000);
+    } else {
+      showToast('error', '❌ ThingSpeak rejected — wait 15s and retry');
+      lastCmdTime = now - COOLDOWN + 5000; // allow retry in 5s
+    }
+  } catch(e) {
+    showToast('error', '❌ Network error — check internet');
+    lastCmdTime = now - COOLDOWN + 5000;
+  }
+
+  setTimeout(() => {
+    document.querySelectorAll('.btn').forEach(b => b.disabled = false);
+    sending = false;
+  }, 3000);
+}
+
+// ── 15s COOLDOWN BAR ───────────────────────────────────────────
+function showCooldownBar(seconds, total) {
+  const ex = document.getElementById('cd-wrap');
+  if (ex) ex.remove();
+  const wrap = document.createElement('div');
+  wrap.id = 'cd-wrap';
+  wrap.style.cssText = 'position:fixed;bottom:70px;left:50%;transform:translateX(-50%);background:var(--card2);border:1px solid var(--border2);border-radius:10px;padding:8px 16px;font-size:11px;color:var(--text2);z-index:998;display:flex;align-items:center;gap:10px;min-width:260px;box-shadow:0 4px 20px rgba(0,0,0,0.4);';
+  wrap.innerHTML = `<span>⏱</span><span id="cd-txt">Next command in ${seconds}s</span><div style="flex:1;height:4px;background:var(--border);border-radius:2px;overflow:hidden"><div id="cd-fill" style="height:100%;background:var(--teal);width:100%;transition:width 1s linear;border-radius:2px"></div></div>`;
+  document.body.appendChild(wrap);
+  let rem = seconds;
+  const iv = setInterval(() => {
+    rem--;
+    const t = document.getElementById('cd-txt');
+    const f = document.getElementById('cd-fill');
+    if (t) t.textContent = `Next command in ${rem}s`;
+    if (f) f.style.width = Math.max(0, (rem / total) * 100) + '%';
+    if (rem <= 0) {
+      clearInterval(iv);
+      const w = document.getElementById('cd-wrap');
+      if (w) w.remove();
+    }
+  }, 1000);
+}
+
+// ── ANALYTICS CHARTS ───────────────────────────────────────────
 const chartCfg = [
   { id:'ch-temp', field:'field1', label:'Temperature (°C)', color:'#f6ad55' },
-  { id:'ch-hum',  field:'field2', label:'Humidity (%)',      color:'#63b3ed' },
-  { id:'ch-occ',  field:'field3', label:'Occupancy',         color:'#00d4aa', bar:true },
-  { id:'ch-air',  field:'field4', label:'Air Quality',       color:'#b794f4' },
-  { id:'ch-ldr',  field:'field5', label:'Light Level',       color:'#f6e05e' },
-  { id:'ch-cur',  field:'field6', label:'Current',           color:'#fc8181' },
+  { id:'ch-hum',  field:'field2', label:'Humidity (%)',     color:'#63b3ed' },
+  { id:'ch-occ',  field:'field3', label:'Student Count',    color:'#00d4aa', type:'bar' },
+  { id:'ch-air',  field:'field4', label:'Air Quality',      color:'#b794f4' },
+  { id:'ch-ldr',  field:'field5', label:'Light Level',      color:'#f6e05e' },
+  { id:'ch-cur',  field:'field6', label:'Current (raw)',    color:'#fc8181' },
 ];
 
 async function loadCharts() {
-  chartsLoaded = true;
-  const loading = document.getElementById('charts-loading');
-  const grid    = document.getElementById('charts-grid');
-  loading.style.display = 'block';
-  loading.textContent   = '⏳ Loading charts from ThingSpeak...';
-  grid.style.display    = 'none';
+  const loadEl = document.getElementById('charts-loading');
+  const gridEl = document.getElementById('charts-grid');
+  if (!loadEl || !gridEl) return;
+  loadEl.style.display = 'block';
+  loadEl.textContent   = '⏳ Loading charts...';
+  gridEl.style.display = 'none';
   try {
     const r    = await fetch(`https://api.thingspeak.com/channels/${CH}/feeds.json?api_key=${RKEY}&results=60`);
     const data = await r.json();
     const feeds = data.feeds || [];
     if (!feeds.length) throw new Error('No data');
-
     const labels = feeds.map(f => {
       const d = new Date(f.created_at);
-      return d.getHours().toString().padStart(2,'0') + ':' + d.getMinutes().toString().padStart(2,'0');
+      return String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
     });
-
-    loading.style.display = 'none';
-    grid.style.display    = 'grid';
-
+    loadEl.style.display = 'none';
+    gridEl.style.display = 'grid';
     chartCfg.forEach(cfg => {
       const values = feeds.map(f => parseFloat(f[cfg.field]) || 0);
       const canvas = document.getElementById(cfg.id);
-      if (chartInstances[cfg.id]) { chartInstances[cfg.id].destroy(); }
-      chartInstances[cfg.id] = new Chart(canvas, {
-        type: cfg.bar ? 'bar' : 'line',
-        data: {
-          labels,
-          datasets: [{
-            label: cfg.label,
-            data: values,
-            borderColor: cfg.color,
-            backgroundColor: cfg.color + (cfg.bar ? '55' : '22'),
-            borderWidth: 2,
-            pointRadius: 0,
-            tension: 0.3,
-            fill: true,
-          }]
-        },
-        options: {
-          responsive: true,
-          animation: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: { backgroundColor:'#1a2540', titleColor:'#94a3b8', bodyColor:'#e2e8f0', borderColor:'rgba(99,179,237,0.2)', borderWidth:1 }
-          },
+      if (!canvas) return;
+      if (chartInst[cfg.id]) chartInst[cfg.id].destroy();
+      chartInst[cfg.id] = new Chart(canvas, {
+        type: cfg.type || 'line',
+        data: { labels, datasets: [{ label: cfg.label, data: values,
+          borderColor: cfg.color,
+          backgroundColor: cfg.type === 'bar' ? cfg.color + '55' : cfg.color + '22',
+          borderWidth: 2, pointRadius: 0, tension: 0.3, fill: true }]},
+        options: { responsive: true, animation: false,
+          plugins: { legend:{ display:false },
+            tooltip:{ backgroundColor:'#1a2540', titleColor:'#94a3b8', bodyColor:'#e2e8f0', borderColor:'rgba(99,179,237,0.2)', borderWidth:1 }},
           scales: {
-            x: { ticks:{ color:'#64748b', maxTicksLimit:8, font:{size:9} }, grid:{ color:'rgba(99,179,237,0.05)' } },
-            y: { ticks:{ color:'#64748b', font:{size:9} },                  grid:{ color:'rgba(99,179,237,0.05)' } }
+            x:{ ticks:{ color:'#64748b', maxTicksLimit:8, font:{size:9} }, grid:{color:'rgba(99,179,237,0.05)'} },
+            y:{ ticks:{ color:'#64748b', font:{size:9} }, grid:{color:'rgba(99,179,237,0.05)'} }
           }
         }
       });
     });
   } catch(e) {
-    loading.style.display = 'block';
-    loading.textContent   = '❌ Failed to load charts — check internet connection and try Refresh';
-    grid.style.display    = 'none';
+    if (loadEl) loadEl.textContent = '❌ Failed to load — click Refresh to retry';
   }
 }
 
-// ── ONLINE STATUS ─────────────────────────────────────────────
+function reloadCharts() { chartsLoaded = false; chartsLoaded = true; loadCharts(); }
+
+// ── ONLINE STATUS ──────────────────────────────────────────────
 function setOnline(on) {
   const dot = document.getElementById('wifi-dot');
   const txt = document.getElementById('wifi-txt');
-  dot.className    = on ? 'dot' : 'dot red';
-  txt.textContent  = on ? 'ThingSpeak Live' : 'Connection Error';
-  txt.style.color  = on ? 'var(--green)' : 'var(--red)';
+  dot.className = on ? 'dot' : 'dot red';
+  txt.textContent = on ? 'ThingSpeak Live' : 'Connection Error';
+  txt.style.color = on ? 'var(--green)' : 'var(--red)';
 }
 
-// ── TOAST ─────────────────────────────────────────────────────
+// ── TOAST ──────────────────────────────────────────────────────
 function showToast(type, msg) {
-  const colors = { success:'var(--teal)', error:'var(--red)', info:'var(--blue)' };
+  const colors = { success: 'var(--teal)', error: 'var(--red)', info: 'var(--blue)' };
   const el = document.createElement('div');
   el.className = 'toast-item';
   el.style.borderColor = colors[type] || 'var(--border2)';
@@ -869,7 +893,7 @@ function showToast(type, msg) {
   setTimeout(() => el.remove(), 5000);
 }
 
-// ── INIT ──────────────────────────────────────────────────────
+// ── INIT ────────────────────────────────────────────────────────
 document.getElementById('start-time').textContent = new Date().toLocaleTimeString();
 fetchData();
 setInterval(fetchData, REFRESH);
